@@ -18,3 +18,7 @@ main =
   do
     print $ graph
     print $ Graph.invertToMap (\i -> fromMaybe IntSet.empty $ IntMap.lookup i graph) (IntSet.singleton 0)
+    print $ Graph.reachableRefl (\i -> fromMaybe IntSet.empty $ IntMap.lookup i graph) (IntSet.singleton 4)
+
+mapSnd :: ( b -> c ) -> (a, b) -> (a, c)
+mapSnd f (a, b) = (a, f b)
