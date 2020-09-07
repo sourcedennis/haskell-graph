@@ -33,4 +33,5 @@ executables:
     - -with-rtsopts=-N
     - -O2
     dependencies:
-    - base >= 4.7 && < 5
+    - graph
+    - containers >= 0.6 && < 0.7
