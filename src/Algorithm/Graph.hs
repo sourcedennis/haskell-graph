@@ -4,6 +4,7 @@ module Algorithm.Graph
   , invertToMap
   , reachableRefl
   , reachable
+  , dominatedBy
   ) where
 
 -- Stdlib imports
@@ -21,7 +22,7 @@ import           Data.IntSet ( IntSet )
 -- | Internal.
 type Visited = IntSet
 
--- | Inverts the given graph.
+-- | /O(n)/. Inverts the given graph.
 --
 -- Nodes in graphs are represented by 'Int's. The input graph is fully described
 -- by the root nodes and a transition function to the next nodes in the graph.
@@ -30,7 +31,7 @@ type Visited = IntSet
 invert :: ( Int -> IntSet ) -> IntSet -> ( Int -> IntSet )
 invert fNext roots = safeLookup IntSet.empty $ invertToMap fNext roots
 
--- | Inverts the given graph.
+-- | /O(n)/. Inverts the given graph.
 --
 -- Nodes in graphs are represented by 'Int's. The input graph is fully described
 -- by the root nodes and a transition function to the next nodes in the graph.
@@ -57,14 +58,14 @@ invertToMap fNext roots = snd $ execState (mapM_ invertFrom $ IntSet.toList root
   insertEdge :: Int -> Int -> State (a, IntMap IntSet) ()
   insertEdge i j = S.modify $ mapSnd $ IntMap.alter (Just . IntSet.insert j . fromMaybe IntSet.empty) i
 
--- | Returns the set of nodes reachable from the given source nodes.
+-- | /O(n)/. Returns the set of nodes reachable from the given source nodes.
 --
 -- This determines reflexive transitive reachability. So every node always
 -- reaches itself.
 reachableRefl :: ( Int -> IntSet ) -> IntSet -> IntSet
 reachableRefl fNext roots = roots `IntSet.union` reachable fNext roots
 
--- | Returns the set of nodes reachable from the given source nodes.
+-- | /O(n)/. Returns the set of nodes reachable from the given source nodes.
 --
 -- Note that this only determines transitive reachability, so a node /cannot/
 -- generally reach itself. A node can only reach itself through a cycle. if
@@ -85,6 +86,40 @@ reachable fNext roots = execState (mapM_ reachableFrom $ IntSet.toList $ foldMap
   isVisited :: Int -> State Visited Bool
   isVisited i = S.gets ( IntSet.member i )
 
+
+-- | /O(n)/. Returns the set of nodes dominated by the given node. The path from
+-- any root node to a dominated node passes through the dominator.
+dominatedBy :: ( Int -> IntSet ) -> IntSet -> Int -> IntSet
+dominatedBy fNext roots node =
+  IntMap.keysSet $ IntMap.filter id $ execState (mapM_ (dominatedFrom False) (IntSet.toList roots)) IntMap.empty
+  where
+  -- When a node is `Nothing` it can become `Just True` or `Just False`,
+  -- depending on whether the dominator was visited. When it is `Just True`,
+  -- it can become `Just False` if a path without dominator is found.
+  -- So: Nothing ~> Just True ~> Just False
+  -- Every node is thus visited at most once. Hence the entire procedure takes
+  -- /O(n)/.
+  dominatedFrom :: Bool -> Int -> State (IntMap Bool) ()
+  dominatedFrom isDominatorVisited i =
+    do
+      m <- S.get
+      let isDominatorVisited' = isDominatorVisited || i == node
+      case i `IntMap.lookup` m of
+        Nothing ->
+          do
+            S.modify $ IntMap.insert i isDominatorVisited'
+            mapM_ (dominatedFrom isDominatorVisited') (IntSet.toList $ fNext i)
+        Just False ->
+          -- There is a path where this node is /not/ preceded by the dominator,
+          -- so it's not dominated. Ignore.
+          return ()
+        Just True ->
+          unless isDominatorVisited' $
+            do
+              -- A path is found where the dominator is not visited. So the
+              -- current node is not dominated after all.
+              S.modify $ IntMap.insert i False
+              mapM_ (dominatedFrom False) (IntSet.toList $ fNext i)
 
 -- # Helpers #
 
