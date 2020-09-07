@@ -1,0 +1,36 @@
+name:                graph
+version:             0.0.1
+github:              "sourcedennis/haskell-graph"
+license:             BSD3
+author:              "Dennis Sprokholt"
+maintainer:          "me@dennis.life"
+copyright:           "2020 Dennis Sprokholt"
+
+extra-source-files:
+- README.md
+- LICENSE
+
+description:         Please see the README on GitHub at <https://github.com/sourcedennis/haskell-graph#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+
+library:
+  source-dirs: src
+  dependencies:
+  - containers >= 0.6 && < 0.7
+  - mtl >= 2.2 && < 3
+  exposed-modules:
+  - Algorithm.Graph
+
+executables:
+  graph-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    - -O2
+    dependencies:
+    - base >= 4.7 && < 5
