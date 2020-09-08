@@ -5,6 +5,8 @@ module Algorithm.Graph
   , reachableRefl
   , reachable
   , dominatedBy
+  , allDominators
+  , allDominatorsToMap
   ) where
 
 -- Stdlib imports
@@ -120,6 +122,28 @@ dominatedBy fNext roots node =
               -- current node is not dominated after all.
               S.modify $ IntMap.insert i False
               mapM_ (dominatedFrom False) (IntSet.toList $ fNext i)
+
+allDominators :: ( Int -> IntSet ) -> IntSet -> ( Int -> IntSet )
+allDominators fNext roots = safeLookup IntSet.empty $ allDominatorsToMap fNext roots
+
+-- | /O(n^2)/.
+allDominatorsToMap :: ( Int -> IntSet ) -> IntSet -> IntMap IntSet
+allDominatorsToMap fNext roots =
+  let allNodes = reachableRefl fNext roots
+  in execState (mapM_ (\i -> intersectStep i (IntSet.singleton i)) $ IntSet.toList roots) IntMap.empty
+  where
+  allNodes :: IntSet
+  allNodes = reachableRefl fNext roots
+
+  intersectStep :: Int -> IntSet -> State (IntMap IntSet) ()
+  intersectStep i s =
+    do
+      currSet <- S.gets $ fromMaybe allNodes . IntMap.lookup i
+      let newSet = currSet `IntSet.intersection` (IntSet.insert i s)
+      unless (newSet == currSet) $
+        do
+          S.modify $ IntMap.insert i newSet
+          mapM_ (\j -> intersectStep j newSet) $ IntSet.toList (fNext i)
 
 -- # Helpers #
 
