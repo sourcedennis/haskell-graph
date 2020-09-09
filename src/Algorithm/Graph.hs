@@ -1,3 +1,4 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Algorithm.Graph
   ( invert
@@ -7,6 +8,8 @@ module Algorithm.Graph
   , dominatedBy
   , allDominators
   , allDominatorsToMap
+  , dataflowFix
+  , dataflowFixToMap
   ) where
 
 -- Stdlib imports
@@ -124,7 +127,8 @@ dominatedBy fNext roots node =
               mapM_ (dominatedFrom False) (IntSet.toList $ fNext i)
 
 allDominators :: ( Int -> IntSet ) -> IntSet -> ( Int -> IntSet )
-allDominators fNext roots = safeLookup IntSet.empty $ allDominatorsToMap fNext roots
+allDominators fNext roots =
+  safeLookup IntSet.empty $ allDominatorsToMap fNext roots
 
 -- | /O(n^2)/.
 allDominatorsToMap :: ( Int -> IntSet ) -> IntSet -> IntMap IntSet
@@ -144,6 +148,25 @@ allDominatorsToMap fNext roots =
         do
           S.modify $ IntMap.insert i newSet
           mapM_ (\j -> intersectStep j newSet) $ IntSet.toList (fNext i)
+
+dataflowFix :: Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> IntMap ( a -> a ) ) -> IntSet -> ( Int -> a )
+dataflowFix aTop aBottom fConfluence fNext roots =
+  safeLookup aTop $ dataflowFixToMap aTop aBottom fConfluence fNext roots
+
+dataflowFixToMap :: forall a . Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> IntMap ( a -> a ) ) -> IntSet -> IntMap a
+dataflowFixToMap aTop aBottom fConfluence fNext roots =
+  execState (mapM_ (step aTop) $ IntSet.toList roots) IntMap.empty
+  where
+  step :: a -> Int -> State (IntMap a) ()
+  step aInput i =
+    do
+      currVal <- S.gets $ fromMaybe aBottom . IntMap.lookup i
+      let newVal = fConfluence currVal aInput
+      unless ( currVal == newVal ) $
+        do
+          S.modify $ IntMap.insert i newVal
+          mapM_ (\(i, fTransition) -> step (fTransition newVal) i) (IntMap.toList $ fNext i)
+
 
 -- # Helpers #
 
