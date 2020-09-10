@@ -15,7 +15,7 @@ module Algorithm.Graph
 -- Stdlib imports
 import           Data.Maybe ( fromMaybe )
 -- Extra stdlib imports
-import           Control.Monad ( unless, join, mapM_ )
+import           Control.Monad ( unless, when, join, mapM_ )
 import qualified Control.Monad.State as S
 import           Control.Monad.State ( State, execState )
 import qualified Data.IntMap.Strict as IntMap
@@ -126,11 +126,17 @@ dominatedBy fNext roots node =
               S.modify $ IntMap.insert i False
               mapM_ (dominatedFrom False) (IntSet.toList $ fNext i)
 
+-- | /O(n^2)/. Computes for each node in the graph its dominators. A node
+-- dominates another if every path from the root passes through the dominator.
 allDominators :: ( Int -> IntSet ) -> IntSet -> ( Int -> IntSet )
 allDominators fNext roots =
   safeLookup IntSet.empty $ allDominatorsToMap fNext roots
 
--- | /O(n^2)/.
+-- | /O(n^2)/. Computes for each node in the graph its dominators. A node
+-- dominates another if every path from the root passes through the dominator.
+--
+-- This function produces a map with an entry for each node. This entry contains
+-- the node's dominators.
 allDominatorsToMap :: ( Int -> IntSet ) -> IntSet -> IntMap IntSet
 allDominatorsToMap fNext roots =
   let allNodes = reachableRefl fNext roots
@@ -144,28 +150,41 @@ allDominatorsToMap fNext roots =
     do
       currSet <- S.gets $ fromMaybe allNodes . IntMap.lookup i
       let newSet = currSet `IntSet.intersection` (IntSet.insert i s)
-      unless (newSet == currSet) $
+      when (newSet /= currSet) $
         do
           S.modify $ IntMap.insert i newSet
           mapM_ (\j -> intersectStep j newSet) $ IntSet.toList (fNext i)
 
-dataflowFix :: Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> IntMap ( a -> a ) ) -> IntSet -> ( Int -> a )
+-- | /O(n^2)/. An iterative algorithm that finds the /least fixed point/ for the
+-- given dataflow equation. Transitions are expected to be present on the edges.
+dataflowFix :: Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> ( Int -> a )
 dataflowFix aTop aBottom fConfluence fNext roots =
   safeLookup aTop $ dataflowFixToMap aTop aBottom fConfluence fNext roots
 
-dataflowFixToMap :: forall a . Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> IntMap ( a -> a ) ) -> IntSet -> IntMap a
+-- | /O(n^2)/. An iterative algorithm that finds the /least fixed point/ for the
+-- given dataflow equation. Transitions are expected to be present on the edges.
+dataflowFixToMap :: forall a . Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> IntMap a
 dataflowFixToMap aTop aBottom fConfluence fNext roots =
+  -- Note that the roots are initialised to the /top/ value, as nothing is known
+  -- about them. The other (reachable) nodes are initialised with /bottom/.
+  -- Through iteration, a "higher" value (in the lattice) can be found that is
+  -- consistent with the equation.
   execState (mapM_ (step aTop) $ IntSet.toList roots) IntMap.empty
   where
   step :: a -> Int -> State (IntMap a) ()
   step aInput i =
     do
+      -- If the node's value is unknown, it's initialised with /bottom/.
+      -- Through iteration it may obtain a "better" value that is consistent
+      -- with the graph under the dataflow equation.
       currVal <- S.gets $ fromMaybe aBottom . IntMap.lookup i
       let newVal = fConfluence currVal aInput
-      unless ( currVal == newVal ) $
+      -- Only continue forward if something has changed. Otherwise it won't
+      -- terminate upon reaching a fixed point.
+      when ( currVal /= newVal ) $
         do
           S.modify $ IntMap.insert i newVal
-          mapM_ (\(i, fTransition) -> step (fTransition newVal) i) (IntMap.toList $ fNext i)
+          mapM_ (\(i, fTransition) -> step (fTransition newVal) i) (fNext i)
 
 
 -- # Helpers #
