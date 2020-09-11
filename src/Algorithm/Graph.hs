@@ -93,7 +93,7 @@ reachable fNext roots = execState (mapM_ reachableFrom $ IntSet.toList $ foldMap
 
 
 -- | /O(n)/. Returns the set of nodes dominated by the given node. The path from
--- any root node to a dominated node passes through the dominator.
+-- /every/ root node to a dominated node passes through the dominator.
 dominatedBy :: ( Int -> IntSet ) -> IntSet -> Int -> IntSet
 dominatedBy fNext roots node =
   IntMap.keysSet $ IntMap.filter id $ execState (mapM_ (dominatedFrom False) (IntSet.toList roots)) IntMap.empty
@@ -127,20 +127,21 @@ dominatedBy fNext roots node =
               mapM_ (dominatedFrom False) (IntSet.toList $ fNext i)
 
 -- | /O(n^2)/. Computes for each node in the graph its dominators. A node
--- dominates another if every path from the root passes through the dominator.
+-- dominates another if /every/ path from /every/ root passes through the
+-- dominator.
 allDominators :: ( Int -> IntSet ) -> IntSet -> ( Int -> IntSet )
 allDominators fNext roots =
   safeLookup IntSet.empty $ allDominatorsToMap fNext roots
 
 -- | /O(n^2)/. Computes for each node in the graph its dominators. A node
--- dominates another if every path from the root passes through the dominator.
+-- dominates another if /every/ path from /every/ root to the dominated node
+-- passes through the dominator.
 --
 -- This function produces a map with an entry for each node. This entry contains
 -- the node's dominators.
 allDominatorsToMap :: ( Int -> IntSet ) -> IntSet -> IntMap IntSet
 allDominatorsToMap fNext roots =
-  let allNodes = reachableRefl fNext roots
-  in execState (mapM_ (\i -> intersectStep i (IntSet.singleton i)) $ IntSet.toList roots) IntMap.empty
+  execState (mapM_ (\i -> intersectStep i (IntSet.singleton i)) $ IntSet.toList roots) IntMap.empty
   where
   allNodes :: IntSet
   allNodes = reachableRefl fNext roots
@@ -156,13 +157,13 @@ allDominatorsToMap fNext roots =
           mapM_ (\j -> intersectStep j newSet) $ IntSet.toList (fNext i)
 
 -- | /O(n^2)/. An iterative algorithm that finds the /least fixed point/ for the
--- given dataflow equation. Transitions are expected to be present on the edges.
+-- given dataflow equation. Transitions exist on the edges.
 dataflowFix :: Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> ( Int -> a )
 dataflowFix aTop aBottom fConfluence fNext roots =
   safeLookup aTop $ dataflowFixToMap aTop aBottom fConfluence fNext roots
 
 -- | /O(n^2)/. An iterative algorithm that finds the /least fixed point/ for the
--- given dataflow equation. Transitions are expected to be present on the edges.
+-- given dataflow equation. Transitions exist on the edges.
 dataflowFixToMap :: forall a . Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> IntMap a
 dataflowFixToMap aTop aBottom fConfluence fNext roots =
   -- Note that the roots are initialised to the /top/ value, as nothing is known
