@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 
 module Algorithm.Graph
   ( invert
@@ -10,18 +10,32 @@ module Algorithm.Graph
   , allDominatorsToMap
   , dataflowFix
   , dataflowFixToMap
+  , findDuplicates
   ) where
 
 -- Stdlib imports
 import           Data.Maybe ( fromMaybe )
+import qualified Data.List.NonEmpty as NE
+import           Data.List.NonEmpty ( NonEmpty ((:|)) )
 -- Extra stdlib imports
 import           Control.Monad ( unless, when, join, mapM_ )
 import qualified Control.Monad.State as S
 import           Control.Monad.State ( State, execState )
+import qualified Control.Monad.RWS as RWS
+import           Control.Monad.RWS ( RWS )
+import qualified Control.Monad.Reader as R
+import           Control.Monad.Reader ( Reader )
+import qualified Data.Map as Map
+import           Data.Map ( Map )
 import qualified Data.IntMap.Strict as IntMap
 import           Data.IntMap.Strict ( IntMap )
 import qualified Data.IntSet as IntSet
 import           Data.IntSet ( IntSet )
+-- External library imports
+import qualified Data.EqRel as EqRel
+import           Data.EqRel ( EqRel )
+import qualified Data.IntEqRel as IntEqRel
+import           Data.IntEqRel ( IntEqRel )
 
 
 -- | Internal.
@@ -187,6 +201,49 @@ dataflowFixToMap aTop aBottom fConfluence fNext roots =
           S.modify $ IntMap.insert i newVal
           mapM_ (\(i, fTransition) -> step (fTransition newVal) i) (fNext i)
 
+-- /O(n^3)/. Finds duplicate nodes in the graph.
+--
+-- With a good classifier and "typical" graph, the complexity is close to
+-- /Ω(n^2)/.
+findDuplicates :: Ord b
+               => ( a -> b ) -- ^ Classify
+               -> ( forall m . ( Int -> Int -> m Bool ) -> a -> a -> m Bool )
+                  -- ^ Is Equal
+               -> ( a -> IntSet ) -- ^ Next
+               -> ( Int -> a )    -- ^ Graph node mapping
+               -> IntSet          -- ^ Roots
+               -> IntEqRel
+findDuplicates fClassify fIsEq fNext fNode roots =
+  let nodeIds    = reachableRefl (fNext . fNode) roots
+      nodeGroups = classify (fClassify . fNode) (IntSet.toList nodeIds)
+      nodePairs  = concatMap reflPermutations nodeGroups
+  in
+  fst $ S.execState (mapM (uncurry storeEq) nodePairs) (IntEqRel.empty, IntMap.empty)
+  where
+  storeEq :: Int -> Int -> State (IntEqRel, IntUneqRel) ()
+  storeEq a b =
+    do
+      (eqRel, uneqRel) <- S.get
+      let (areEqAB, uneqRel', _) = RWS.runRWS (areEq a b) eqRel uneqRel
+      S.put (eqRel, uneqRel')
+
+  areEq :: Int -> Int -> RWS IntEqRel () IntUneqRel Bool
+  areEq a b =
+    do
+      (areEqAB, eqRel) <- R.asks (IntEqRel.areEq a b)
+      areUneqAB <- S.gets (areInUneq a b)
+      if areEqAB then
+        return True
+      else if areUneqAB || fClassify (fNode a) /= fClassify (fNode b) then
+        return False
+      else
+        do
+          let aNode = fNode a
+              bNode = fNode b
+          isActualEq <- R.local (const $ IntEqRel.equate a b eqRel) (fIsEq areEq aNode bNode)
+          unless isActualEq (S.modify $ insertUneq a b)
+          return isActualEq
+
 
 -- # Helpers #
 
@@ -204,3 +261,34 @@ safeLookup a m i = fromMaybe a (IntMap.lookup i m)
 
 foldMapIntSet :: ( Int -> IntSet ) -> IntSet -> IntSet
 foldMapIntSet fNext = foldMap fNext . IntSet.toList
+
+-- | 
+reflPermutations :: NonEmpty a -> [(a,a)]
+reflPermutations (x :| [])        = []
+reflPermutations (x :| ys@(z:zs)) = [(x,y) | y <- ys] ++ reflPermutations (z :| zs)
+
+classify :: forall a b . Ord b => ( a -> b ) -> [a] -> [NonEmpty a]
+classify fClassify = Map.elems . foldr classify' Map.empty
+  where
+  classify' :: a -> Map b (NonEmpty a) -> Map b (NonEmpty a)
+  classify' a = Map.alter (Just . mCons a) (fClassify a)
+
+  mCons :: c -> Maybe (NonEmpty c) -> NonEmpty c
+  mCons x Nothing   = x :| []
+  mCons x (Just xs) = x :| NE.toList xs
+
+-- Internal. Stores an /inequality/ relation. The lowest int is the map key,
+-- while the highest int is the set element.
+type IntUneqRel = IntMap IntSet
+
+areInUneq :: Int -> Int -> IntUneqRel -> Bool
+areInUneq a b m
+  | a < b      = maybe False (IntSet.member b) (IntMap.lookup a m)
+  | a > b      = maybe False (IntSet.member a) (IntMap.lookup b m)
+  | otherwise  = False
+
+insertUneq :: Int -> Int -> IntUneqRel -> IntUneqRel
+insertUneq a b m
+  | a < b      = IntMap.alter (Just . IntSet.insert b . fromMaybe IntSet.empty) a m
+  | a > b      = IntMap.alter (Just . IntSet.insert a . fromMaybe IntSet.empty) b m
+  | otherwise  = error "a /= a"
