@@ -20,6 +20,7 @@ library:
   dependencies:
   - containers >= 0.6 && < 0.7
   - mtl >= 2.2 && < 3
+  - eqrel
   exposed-modules:
   - Algorithm.Graph
 

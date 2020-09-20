@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes, TupleSections #-}
 
 module Algorithm.Graph
   ( invert
@@ -10,7 +10,9 @@ module Algorithm.Graph
   , allDominatorsToMap
   , dataflowFix
   , dataflowFixToMap
+  , Graph (..)
   , findDuplicates
+  , removeDuplicates
   ) where
 
 -- Stdlib imports
@@ -25,6 +27,7 @@ import qualified Control.Monad.RWS as RWS
 import           Control.Monad.RWS ( RWS )
 import qualified Control.Monad.Reader as R
 import           Control.Monad.Reader ( Reader )
+import           Control.Monad.Identity ( Identity (..), runIdentity )
 import qualified Data.Map as Map
 import           Data.Map ( Map )
 import qualified Data.IntMap.Strict as IntMap
@@ -36,6 +39,8 @@ import qualified Data.EqRel as EqRel
 import           Data.EqRel ( EqRel )
 import qualified Data.IntEqRel as IntEqRel
 import           Data.IntEqRel ( IntEqRel )
+import qualified Data.Frozen.IntEqRel as FrozenIntEqRel
+import           Data.Frozen.IntEqRel ( FrozenIntEqRel )
 
 
 -- | Internal.
@@ -201,32 +206,62 @@ dataflowFixToMap aTop aBottom fConfluence fNext roots =
           S.modify $ IntMap.insert i newVal
           mapM_ (\(i, fTransition) -> step (fTransition newVal) i) (fNext i)
 
--- /O(n^3)/. Finds duplicate nodes in the graph.
+-- | One particular graph representation. It is polymorphic in its node type.
+-- It is entirely represented by the roots, and nodes reachable from the roots.
+data Graph a =
+  Graph {
+    next      :: a -> IntSet
+  , nodeById  :: Int -> a
+  , roots     :: IntSet
+  }
+
+-- | /O(n^3)/. Finds duplicate nodes in the graph.
 --
 -- With a good classifier and "typical" graph, the complexity is close to
--- /Ω(n^2)/.
-findDuplicates :: Ord b
-               => ( a -> b ) -- ^ Classify
-               -> ( forall m . ( Int -> Int -> m Bool ) -> a -> a -> m Bool )
+-- /Ω(n)/.
+findDuplicates :: forall a c . Ord c
+               => ( a -> c ) -- ^ Classify
+               -> ( forall m . Monad m => ( Int -> Int -> m Bool ) -> a -> a -> m Bool )
                   -- ^ Is Equal
-               -> ( a -> IntSet ) -- ^ Next
-               -> ( Int -> a )    -- ^ Graph node mapping
-               -> IntSet          -- ^ Roots
+               -> Graph a
                -> IntEqRel
-findDuplicates fClassify fIsEq fNext fNode roots =
-  let nodeIds    = reachableRefl (fNext . fNode) roots
+findDuplicates fClassify fIsEq graph =
+  let nodeIds    = reachableRefl (fNext . fNode) (roots graph)
       nodeGroups = classify (fClassify . fNode) (IntSet.toList nodeIds)
       nodePairs  = concatMap reflPermutations nodeGroups
   in
   fst $ S.execState (mapM (uncurry storeEq) nodePairs) (IntEqRel.empty, IntMap.empty)
   where
+  fNext :: a -> IntSet
+  fNext = next graph
+
+  fNode :: Int -> a
+  fNode = nodeById graph
+
+  -- | The input nodes themselves, as well as its successor nodes are compared.
+  -- This continuously traverses the outgoing paths until unequal nodes are
+  -- found, or they are all equal. If the input nodes /could/ be equal (e.g.,
+  -- they share the same constructor), they are /assumed/ to be equal while
+  -- traversing the path. If this proves consistent (i.e., no unequal nodes are
+  -- found), the nodes are /actually/ equal.
   storeEq :: Int -> Int -> State (IntEqRel, IntUneqRel) ()
   storeEq a b =
     do
       (eqRel, uneqRel) <- S.get
+      -- Find out whether `a` and `b` are equal. Use previously determined
+      -- equalities and inequalities to speed this up.
       let (areEqAB, uneqRel', _) = RWS.runRWS (areEq a b) eqRel uneqRel
-      S.put (eqRel, uneqRel')
+          eqRel' =
+            if areEqAB then
+              IntEqRel.equate a b eqRel
+            else
+              eqRel
+      S.put (eqRel', uneqRel')
 
+  -- | Compares the nodes represented by its two inputs. This operates under the
+  -- /assumption/ of their equality (and equality of subsequent nodes), and then
+  -- tests if this is consistent. The `Reader` part contains these assumptions
+  -- that are propagated. The `State` part stores nodes that are surely unequal.
   areEq :: Int -> Int -> RWS IntEqRel () IntUneqRel Bool
   areEq a b =
     do
@@ -240,9 +275,37 @@ findDuplicates fClassify fIsEq fNext fNode roots =
         do
           let aNode = fNode a
               bNode = fNode b
+          -- Assume `a` and `b` are equal, and traverse forward. If this is
+          -- consistent, they are actually equal.
           isActualEq <- R.local (const $ IntEqRel.equate a b eqRel) (fIsEq areEq aNode bNode)
           unless isActualEq (S.modify $ insertUneq a b)
           return isActualEq
+
+
+-- | /O(n^3)/. Removes duplicate nodes from the graph. The output is entirely
+-- represented by a new node-by-id function. This function can eliminate
+-- duplicate cycles.
+--
+-- With a good classifier and "typical" graph, the complexity is close to
+-- /Ω(n)/.
+removeDuplicates :: forall a b c . Ord c
+                 => ( a -> c ) -- ^ Classify
+                 -> ( forall m . Monad m => ( Int -> Int -> m Bool ) -> a -> a -> m Bool )
+                    -- ^ Is Equal
+                 -> ( ( Int -> Int ) -> a -> b ) -- ^ Rebuild
+                 -> Graph a
+                 -> ( Int -> b )
+removeDuplicates fClassify fIsEq fRebuild graph =
+  -- Rebuild the node for the given id. Every successor reference is replaced
+  -- by the canonical equivalent node (i.e., the equivalence class
+  -- representative).
+  \nodeI ->
+    let reprI = FrozenIntEqRel.representative nodeI eqrel
+    in
+    fRebuild (\a -> FrozenIntEqRel.representative a eqrel) (nodeById graph reprI)
+  where
+  eqrel :: FrozenIntEqRel
+  eqrel = fst $ IntEqRel.freeze $ findDuplicates fClassify fIsEq graph
 
 
 -- # Helpers #
@@ -252,6 +315,16 @@ mapFst f (a, b) = (f a, b)
 
 mapSnd :: ( b -> c ) -> (a, b) -> (a, c)
 mapSnd f (a, b) = (a, f b)
+
+mapStateFst :: ( s1 -> (b, s1t) ) -> ( (s1,s2) -> ( b, (s1t,s2) ) )
+mapStateFst f (s1,s2) =
+  let (b, s1') = f s1
+  in ( b, (s1', s2) )
+
+mapStateSnd :: ( s2 -> (b, s2t) ) -> ( (s1,s2) -> ( b, (s1,s2t) ) )
+mapStateSnd f (s1,s2) =
+  let (b, s2') = f s2
+  in ( b, (s1, s2') )
 
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM mb m = join (unless <$> mb <*> pure m)

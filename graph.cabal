@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: cabb7c6a247df5e26525270f92111306ba58c822cd63a39d52371f2feba3af37
+-- hash: 907be47af3bd84076eec10441b35ec86987c7fd18857d27ca50094c387dcb06e
 
 name:           graph
 version:        0.0.1
@@ -35,6 +35,7 @@ library
   build-depends:
       base >=4.7 && <5
     , containers >=0.6 && <0.7
+    , eqrel
     , mtl >=2.2 && <3
   default-language: Haskell2010
 

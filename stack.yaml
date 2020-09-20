@@ -2,3 +2,7 @@ resolver: lts-15.3
 
 packages:
 - .
+
+extra-deps:
+- git: https://github.com/sourcedennis/haskell-eqrel.git
+  commit: 744daa51cde289839f27422cead6b19b5d9668a3
