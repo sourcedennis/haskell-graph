@@ -1,5 +1,12 @@
 {-# LANGUAGE ScopedTypeVariables, RankNTypes, TupleSections #-}
 
+-- | A collection of several graph algorithms.
+--
+-- All functions in this module are /total/, provided that any argument 
+-- functions are also total.
+--
+-- For most functions, graphs are represented by several root nodes accompanied
+-- by a successor function.
 module Algorithm.Graph
   ( invert
   , invertToMap
@@ -13,6 +20,9 @@ module Algorithm.Graph
   , Graph (..)
   , findDuplicates
   , removeDuplicates
+  , toMap
+  , toMapG
+  , toMapMaybe
   ) where
 
 -- Stdlib imports
@@ -20,7 +30,7 @@ import           Data.Maybe ( fromMaybe )
 import qualified Data.List.NonEmpty as NE
 import           Data.List.NonEmpty ( NonEmpty ((:|)) )
 -- Extra stdlib imports
-import           Control.Monad ( unless, when, join, mapM_ )
+import           Control.Monad ( foldM, unless, when, join, mapM_ )
 import qualified Control.Monad.State as S
 import           Control.Monad.State ( State, execState )
 import qualified Control.Monad.RWS as RWS
@@ -306,6 +316,53 @@ removeDuplicates fClassify fIsEq fRebuild graph =
   where
   eqrel :: FrozenIntEqRel
   eqrel = fst $ IntEqRel.freeze $ findDuplicates fClassify fIsEq graph
+
+-- | /O(n log n)/. Converts a graph - which is represented by roots and transfer
+-- functions - into an `IntMap` containing all nodes.
+--
+-- See also `toMapG`, which operates on the `Graph` datastructure. See also
+-- `reachableRefl`, which explores the same set of nodes.
+toMap :: forall a . ( Int -> a ) -> ( a -> IntSet ) -> IntSet -> IntMap a
+toMap fNode fNext roots =
+  foldr addToMap IntMap.empty (IntSet.toList roots)
+  where
+  addToMap :: Int -> IntMap a -> IntMap a
+  addToMap i m =
+    if i `IntMap.notMember` m then
+      let n  = fNode i
+          m' = IntMap.insert i n m
+      in foldr addToMap m' (IntSet.toList $ fNext n)
+    else
+      m
+
+-- | /O(n log n)/. Converts a graph - which is represented by roots and transfer
+-- functions - into an `IntMap` containing all nodes.
+--
+-- This variant operates on the `Graph` datastructure, while the `toMap` variant
+-- operates on its fields only.
+--
+-- See also `reachableRefl`, which explores the same set of nodes.
+toMapG :: forall a . Graph a -> IntMap a
+toMapG g = toMap (nodeById g) (next g) (roots g)
+
+-- | /O(n log n)/. Converts a graph - that is represented by roots and transfer
+-- functions - into an `IntMap` containing all nodes. If any of the reachable
+-- nodes is `Nothing`, this function also returns `Nothing`.
+--
+-- See also `reachableRefl`, which explores the same set of nodes.
+toMapMaybe :: forall a . ( Int -> Maybe a ) -> ( a -> IntSet ) -> IntSet -> Maybe (IntMap a)
+toMapMaybe fNode fNext roots =
+  foldM (flip addToMap) IntMap.empty (IntSet.toList roots)
+  where
+  addToMap :: Int -> IntMap a -> Maybe (IntMap a)
+  addToMap i m =
+    if i `IntMap.notMember` m then
+      do
+        n <- fNode i
+        let m' = IntMap.insert i n m
+        foldM (flip addToMap) m' (IntSet.toList $ fNext n)
+    else
+      return m
 
 
 -- # Helpers #
