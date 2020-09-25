@@ -346,7 +346,7 @@ toMapMaybe fNode fNext roots =
     else
       return m
 
--- | Returns `True` if both graphs contain an identical set of paths.
+-- | Returns `True` iff both graphs contain identical paths.
 isPathEq :: forall a c
           . Ord c
          => ( a -> c )
@@ -355,13 +355,10 @@ isPathEq :: forall a c
          -> Graph a
          -> Bool
 isPathEq fClassify fIsEq a b =
-  -- fst $ evalRWS
-  --   (areEqOrdRWS eitherNext isEqEither (Left $ root a) (Right $ root b))
-  --   EqRel.empty
-  --   emptyOrdUneq
-  runReader
+  fst $ evalRWS
     (areEqOrdRWS eitherNext isEqEither (Left $ root a) (Right $ root b))
-    (EqRel.empty, emptyOrdUneq)
+    EqRel.empty
+    emptyOrdUneq
   where
   eitherNext :: Either Int Int -> Set (Either Int Int)
   eitherNext = either (mapIntSet Left . next a . nodeById a) (mapIntSet Right . next b . nodeById b)
@@ -421,32 +418,6 @@ areEqRWS fNext fIsEq a b =
         unless isActualEq (S.modify $ insertIntUneq a b)
         return isActualEq
         
--- -- | Internal. Compares the nodes represented by its two inputs. This operates
--- -- under the /assumption/ of their equality (and equality of subsequent nodes),
--- -- and then tests if this is consistent. The `Reader` part contains these
--- -- assumptions that are propagated. The `State` part stores nodes that are surely unequal.
--- areEqOrdRWS :: Ord idx
---             => ( idx -> Set idx )
---             -> ( forall m . Monad m => ( idx -> idx -> m Bool ) -> idx -> idx -> m Bool )
---             -> idx
---             -> idx
---             -> RWS (EqRel idx) () (OrdUneqRel idx) Bool
--- areEqOrdRWS fNext fIsEq a b =
---   do
---     (areEqAB, eqRel) <- R.asks (EqRel.areEq a b)
---     areUneqAB <- S.gets (areOrdUneq a b)
---     if areEqAB then
---       return True
---     else if areUneqAB then
---       return False
---     else
---       do
---         -- Assume `a` and `b` are equal, and traverse forward. If this is
---         -- consistent, they are actually equal.
---         isActualEq <- R.local (const $ EqRel.equate a b eqRel) (fIsEq (areEqOrdRWS fNext fIsEq) a b)
---         unless isActualEq (S.modify $ insertOrdUneq a b)
---         return isActualEq
-        
 -- | Internal. Compares the nodes represented by its two inputs. This operates
 -- under the /assumption/ of their equality (and equality of subsequent nodes),
 -- and then tests if this is consistent. The `Reader` part contains these
@@ -456,11 +427,11 @@ areEqOrdRWS :: Ord idx
             -> ( forall m . Monad m => ( idx -> idx -> m Bool ) -> idx -> idx -> m Bool )
             -> idx
             -> idx
-            -> Reader (EqRel idx, OrdUneqRel idx) Bool
+            -> RWS (EqRel idx) () (OrdUneqRel idx) Bool
 areEqOrdRWS fNext fIsEq a b =
   do
-    (areEqAB, eqRel) <- R.asks (EqRel.areEq a b . fst)
-    areUneqAB <- R.asks (areOrdUneq a b . snd)
+    (areEqAB, eqRel) <- R.asks (EqRel.areEq a b)
+    areUneqAB <- S.gets (areOrdUneq a b)
     if areEqAB then
       return True
     else if areUneqAB then
@@ -469,7 +440,9 @@ areEqOrdRWS fNext fIsEq a b =
       do
         -- Assume `a` and `b` are equal, and traverse forward. If this is
         -- consistent, they are actually equal.
-        R.local (mapFst $ const $ EqRel.equate a b eqRel) (fIsEq (areEqOrdRWS fNext fIsEq) a b)
+        isActualEq <- R.local (const $ EqRel.equate a b eqRel) (fIsEq (areEqOrdRWS fNext fIsEq) a b)
+        unless isActualEq (S.modify $ insertOrdUneq a b)
+        return isActualEq
 
 applyIf :: Bool -> ( a -> a ) -> a -> a
 applyIf True  f a = f a

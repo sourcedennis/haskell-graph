@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 907be47af3bd84076eec10441b35ec86987c7fd18857d27ca50094c387dcb06e
+-- hash: e00fdfd824520c6d73931e04a1e57aaaf437c69aed6e375c630b16b481adee90
 
 name:           graph
 version:        0.0.1
@@ -29,6 +29,7 @@ library
   exposed-modules:
       Algorithm.Graph
   other-modules:
+      Algorithm.Helpers.UneqRel
       Paths_graph
   hs-source-dirs:
       src
