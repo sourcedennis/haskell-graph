@@ -23,6 +23,7 @@ module Algorithm.Graph
   , toMap
   , toMapG
   , toMapMaybe
+  , isPathEq
   ) where
 
 -- Stdlib imports
@@ -31,15 +32,17 @@ import qualified Data.List.NonEmpty as NE
 import           Data.List.NonEmpty ( NonEmpty ((:|)) )
 -- Extra stdlib imports
 import           Control.Monad ( foldM, unless, when, join, mapM_ )
+import qualified Control.Monad.RWS as RWS
+import           Control.Monad.RWS ( RWS, evalRWS )
 import qualified Control.Monad.State as S
 import           Control.Monad.State ( State, execState )
-import qualified Control.Monad.RWS as RWS
-import           Control.Monad.RWS ( RWS )
 import qualified Control.Monad.Reader as R
-import           Control.Monad.Reader ( Reader )
+import           Control.Monad.Reader ( Reader, runReader )
 import           Control.Monad.Identity ( Identity (..), runIdentity )
 import qualified Data.Map as Map
 import           Data.Map ( Map )
+import qualified Data.Set as Set
+import           Data.Set ( Set )
 import qualified Data.IntMap.Strict as IntMap
 import           Data.IntMap.Strict ( IntMap )
 import qualified Data.IntSet as IntSet
@@ -51,6 +54,11 @@ import qualified Data.IntEqRel as IntEqRel
 import           Data.IntEqRel ( IntEqRel )
 import qualified Data.Frozen.IntEqRel as FrozenIntEqRel
 import           Data.Frozen.IntEqRel ( FrozenIntEqRel )
+-- Local imports
+import           Algorithm.Helpers.UneqRel
+  ( OrdUneqRel, emptyOrdUneq, areOrdUneq, insertOrdUneq
+  , IntUneqRel, emptyIntUneq, areIntUneq, insertIntUneq
+  )
 
 
 -- | Internal.
@@ -120,12 +128,11 @@ reachable fNext roots = execState (mapM_ reachableFrom $ IntSet.toList $ foldMap
   isVisited :: Int -> State Visited Bool
   isVisited i = S.gets ( IntSet.member i )
 
-
 -- | /O(n)/. Returns the set of nodes dominated by the given node. The path from
 -- /every/ root node to a dominated node passes through the dominator.
-dominatedBy :: ( Int -> IntSet ) -> IntSet -> Int -> IntSet
-dominatedBy fNext roots node =
-  IntMap.keysSet $ IntMap.filter id $ execState (mapM_ (dominatedFrom False) (IntSet.toList roots)) IntMap.empty
+dominatedBy :: ( Int -> IntSet ) -> Int -> Int -> IntSet
+dominatedBy fNext root node =
+  IntMap.keysSet $ IntMap.filter id $ execState (dominatedFrom False root) IntMap.empty
   where
   -- When a node is `Nothing` it can become `Just True` or `Just False`,
   -- depending on whether the dominator was visited. When it is `Just True`,
@@ -187,14 +194,14 @@ allDominatorsToMap fNext roots =
 
 -- | /O(n^2)/. An iterative algorithm that finds the /least fixed point/ for the
 -- given dataflow equation. Transitions exist on the edges.
-dataflowFix :: Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> ( Int -> a )
-dataflowFix aTop aBottom fConfluence fNext roots =
-  safeLookup aTop $ dataflowFixToMap aTop aBottom fConfluence fNext roots
+dataflowFix :: Eq a => a -> ( Int -> a ) -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> ( Int -> a )
+dataflowFix aTop faBottom fConfluence fNext roots =
+  safeLookup aTop $ dataflowFixToMap aTop faBottom fConfluence fNext roots
 
 -- | /O(n^2)/. An iterative algorithm that finds the /least fixed point/ for the
 -- given dataflow equation. Transitions exist on the edges.
-dataflowFixToMap :: forall a . Eq a => a -> a -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> IntMap a
-dataflowFixToMap aTop aBottom fConfluence fNext roots =
+dataflowFixToMap :: forall a . Eq a => a -> ( Int -> a ) -> ( a -> a -> a ) -> ( Int -> [ ( Int, a -> a ) ] ) -> IntSet -> IntMap a
+dataflowFixToMap aTop faBottom fConfluence fNext roots =
   -- Note that the roots are initialised to the /top/ value, as nothing is known
   -- about them. The other (reachable) nodes are initialised with /bottom/.
   -- Through iteration, a "higher" value (in the lattice) can be found that is
@@ -207,7 +214,7 @@ dataflowFixToMap aTop aBottom fConfluence fNext roots =
       -- If the node's value is unknown, it's initialised with /bottom/.
       -- Through iteration it may obtain a "better" value that is consistent
       -- with the graph under the dataflow equation.
-      currVal <- S.gets $ fromMaybe aBottom . IntMap.lookup i
+      currVal <- S.gets $ fromMaybe (faBottom i) . IntMap.lookup i
       let newVal = fConfluence currVal aInput
       -- Only continue forward if something has changed. Otherwise it won't
       -- terminate upon reaching a fixed point.
@@ -222,7 +229,7 @@ data Graph a =
   Graph {
     next      :: a -> IntSet
   , nodeById  :: Int -> a
-  , roots     :: IntSet
+  , root      :: Int
   }
 
 -- | /O(n^3)/. Finds duplicate nodes in the graph.
@@ -236,17 +243,20 @@ findDuplicates :: forall a c . Ord c
                -> Graph a
                -> IntEqRel
 findDuplicates fClassify fIsEq graph =
-  let nodeIds    = reachableRefl (fNext . fNode) (roots graph)
+  let nodeIds    = reachableRefl (fNext . fNode) (IntSet.singleton $ root graph)
       nodeGroups = classify (fClassify . fNode) (IntSet.toList nodeIds)
-      nodePairs  = concatMap reflPermutations nodeGroups
+      nodePairs  = concatMap (reflPermutations . NE.toList) nodeGroups
   in
-  fst $ S.execState (mapM (uncurry storeEq) nodePairs) (IntEqRel.empty, IntMap.empty)
+  fst $ S.execState (mapM (uncurry storeEq) nodePairs) (IntEqRel.empty, emptyIntUneq)
   where
   fNext :: a -> IntSet
   fNext = next graph
 
   fNode :: Int -> a
   fNode = nodeById graph
+
+  fIsEqNode :: forall m2 . Monad m2 => ( Int -> Int -> m2 Bool ) -> Int -> Int -> m2 Bool
+  fIsEqNode f i j = fIsEq f (fNode i) (fNode j)
 
   -- | The input nodes themselves, as well as its successor nodes are compared.
   -- This continuously traverses the outgoing paths until unequal nodes are
@@ -260,37 +270,9 @@ findDuplicates fClassify fIsEq graph =
       (eqRel, uneqRel) <- S.get
       -- Find out whether `a` and `b` are equal. Use previously determined
       -- equalities and inequalities to speed this up.
-      let (areEqAB, uneqRel', _) = RWS.runRWS (areEq a b) eqRel uneqRel
-          eqRel' =
-            if areEqAB then
-              IntEqRel.equate a b eqRel
-            else
-              eqRel
+      let (areEqAB, uneqRel', _) = RWS.runRWS (areEqRWS (fNext . fNode) fIsEqNode a b) eqRel uneqRel
+          eqRel' = applyIf areEqAB (IntEqRel.equate a b) eqRel
       S.put (eqRel', uneqRel')
-
-  -- | Compares the nodes represented by its two inputs. This operates under the
-  -- /assumption/ of their equality (and equality of subsequent nodes), and then
-  -- tests if this is consistent. The `Reader` part contains these assumptions
-  -- that are propagated. The `State` part stores nodes that are surely unequal.
-  areEq :: Int -> Int -> RWS IntEqRel () IntUneqRel Bool
-  areEq a b =
-    do
-      (areEqAB, eqRel) <- R.asks (IntEqRel.areEq a b)
-      areUneqAB <- S.gets (areInUneq a b)
-      if areEqAB then
-        return True
-      else if areUneqAB || fClassify (fNode a) /= fClassify (fNode b) then
-        return False
-      else
-        do
-          let aNode = fNode a
-              bNode = fNode b
-          -- Assume `a` and `b` are equal, and traverse forward. If this is
-          -- consistent, they are actually equal.
-          isActualEq <- R.local (const $ IntEqRel.equate a b eqRel) (fIsEq areEq aNode bNode)
-          unless isActualEq (S.modify $ insertUneq a b)
-          return isActualEq
-
 
 -- | /O(n^3)/. Removes duplicate nodes from the graph. The output is entirely
 -- represented by a new node-by-id function. This function can eliminate
@@ -343,7 +325,7 @@ toMap fNode fNext roots =
 --
 -- See also `reachableRefl`, which explores the same set of nodes.
 toMapG :: forall a . Graph a -> IntMap a
-toMapG g = toMap (nodeById g) (next g) (roots g)
+toMapG g = toMap (nodeById g) (next g) (IntSet.singleton $ root g)
 
 -- | /O(n log n)/. Converts a graph - that is represented by roots and transfer
 -- functions - into an `IntMap` containing all nodes. If any of the reachable
@@ -364,6 +346,35 @@ toMapMaybe fNode fNext roots =
     else
       return m
 
+-- | Returns `True` if both graphs contain an identical set of paths.
+isPathEq :: forall a c
+          . Ord c
+         => ( a -> c )
+         -> ( forall m . Monad m => ( Int -> Int -> m Bool ) -> a -> a -> m Bool )
+         -> Graph a
+         -> Graph a
+         -> Bool
+isPathEq fClassify fIsEq a b =
+  -- fst $ evalRWS
+  --   (areEqOrdRWS eitherNext isEqEither (Left $ root a) (Right $ root b))
+  --   EqRel.empty
+  --   emptyOrdUneq
+  runReader
+    (areEqOrdRWS eitherNext isEqEither (Left $ root a) (Right $ root b))
+    (EqRel.empty, emptyOrdUneq)
+  where
+  eitherNext :: Either Int Int -> Set (Either Int Int)
+  eitherNext = either (mapIntSet Left . next a . nodeById a) (mapIntSet Right . next b . nodeById b)
+
+  isEqEither :: Monad m => ( Either Int Int -> Either Int Int -> m Bool ) -> Either Int Int -> Either Int Int -> m Bool
+  isEqEither f (Left i)  (Left j)  = fIsEq (\x y -> f (Left x)  (Left y))  (nodeById a i) (nodeById b j)
+  isEqEither f (Left i)  (Right j) = fIsEq (\x y -> f (Left x)  (Right y)) (nodeById a i) (nodeById b j)
+  isEqEither f (Right i) (Left j)  = fIsEq (\x y -> f (Right x) (Left y))  (nodeById a i) (nodeById b j)
+  isEqEither f (Right i) (Right j) = fIsEq (\x y -> f (Right x) (Right y)) (nodeById a i) (nodeById b j)
+
+  fNode :: Either Int Int -> a
+  fNode = either (nodeById a) (nodeById b)
+
 
 -- # Helpers #
 
@@ -373,29 +384,104 @@ mapFst f (a, b) = (f a, b)
 mapSnd :: ( b -> c ) -> (a, b) -> (a, c)
 mapSnd f (a, b) = (a, f b)
 
-mapStateFst :: ( s1 -> (b, s1t) ) -> ( (s1,s2) -> ( b, (s1t,s2) ) )
-mapStateFst f (s1,s2) =
-  let (b, s1') = f s1
-  in ( b, (s1', s2) )
-
-mapStateSnd :: ( s2 -> (b, s2t) ) -> ( (s1,s2) -> ( b, (s1,s2t) ) )
-mapStateSnd f (s1,s2) =
-  let (b, s2') = f s2
-  in ( b, (s1, s2') )
-
-unlessM :: Monad m => m Bool -> m () -> m ()
-unlessM mb m = join (unless <$> mb <*> pure m)
-
 safeLookup :: a -> IntMap a -> ( Int -> a )
 safeLookup a m i = fromMaybe a (IntMap.lookup i m)
 
 foldMapIntSet :: ( Int -> IntSet ) -> IntSet -> IntSet
 foldMapIntSet fNext = foldMap fNext . IntSet.toList
 
+intSetToSetInt :: IntSet -> Set Int
+intSetToSetInt = Set.fromList . IntSet.toList
+
+mapIntSet :: Ord a => ( Int -> a ) -> IntSet -> Set a
+mapIntSet f = Set.fromList . map f . IntSet.toList
+
+-- | Internal. Compares the nodes represented by its two inputs. This operates
+-- under the /assumption/ of their equality (and equality of subsequent nodes),
+-- and then tests if this is consistent. The `Reader` part contains these
+-- assumptions that are propagated. The `State` part stores nodes that are surely unequal.
+areEqRWS :: ( Int -> IntSet )
+         -> ( forall m . Monad m => ( Int -> Int -> m Bool ) -> Int -> Int -> m Bool )
+         -> Int
+         -> Int
+         -> RWS IntEqRel () IntUneqRel Bool
+areEqRWS fNext fIsEq a b =
+  do
+    (areEqAB, eqRel) <- R.asks (IntEqRel.areEq a b)
+    areUneqAB <- S.gets (areIntUneq a b)
+    if areEqAB then
+      return True
+    else if areUneqAB then
+      return False
+    else
+      do
+        -- Assume `a` and `b` are equal, and traverse forward. If this is
+        -- consistent, they are actually equal.
+        isActualEq <- R.local (const $ IntEqRel.equate a b eqRel) (fIsEq (areEqRWS fNext fIsEq) a b)
+        unless isActualEq (S.modify $ insertIntUneq a b)
+        return isActualEq
+        
+-- -- | Internal. Compares the nodes represented by its two inputs. This operates
+-- -- under the /assumption/ of their equality (and equality of subsequent nodes),
+-- -- and then tests if this is consistent. The `Reader` part contains these
+-- -- assumptions that are propagated. The `State` part stores nodes that are surely unequal.
+-- areEqOrdRWS :: Ord idx
+--             => ( idx -> Set idx )
+--             -> ( forall m . Monad m => ( idx -> idx -> m Bool ) -> idx -> idx -> m Bool )
+--             -> idx
+--             -> idx
+--             -> RWS (EqRel idx) () (OrdUneqRel idx) Bool
+-- areEqOrdRWS fNext fIsEq a b =
+--   do
+--     (areEqAB, eqRel) <- R.asks (EqRel.areEq a b)
+--     areUneqAB <- S.gets (areOrdUneq a b)
+--     if areEqAB then
+--       return True
+--     else if areUneqAB then
+--       return False
+--     else
+--       do
+--         -- Assume `a` and `b` are equal, and traverse forward. If this is
+--         -- consistent, they are actually equal.
+--         isActualEq <- R.local (const $ EqRel.equate a b eqRel) (fIsEq (areEqOrdRWS fNext fIsEq) a b)
+--         unless isActualEq (S.modify $ insertOrdUneq a b)
+--         return isActualEq
+        
+-- | Internal. Compares the nodes represented by its two inputs. This operates
+-- under the /assumption/ of their equality (and equality of subsequent nodes),
+-- and then tests if this is consistent. The `Reader` part contains these
+-- assumptions that are propagated. The `State` part stores nodes that are surely unequal.
+areEqOrdRWS :: Ord idx
+            => ( idx -> Set idx )
+            -> ( forall m . Monad m => ( idx -> idx -> m Bool ) -> idx -> idx -> m Bool )
+            -> idx
+            -> idx
+            -> Reader (EqRel idx, OrdUneqRel idx) Bool
+areEqOrdRWS fNext fIsEq a b =
+  do
+    (areEqAB, eqRel) <- R.asks (EqRel.areEq a b . fst)
+    areUneqAB <- R.asks (areOrdUneq a b . snd)
+    if areEqAB then
+      return True
+    else if areUneqAB then
+      return False
+    else
+      do
+        -- Assume `a` and `b` are equal, and traverse forward. If this is
+        -- consistent, they are actually equal.
+        R.local (mapFst $ const $ EqRel.equate a b eqRel) (fIsEq (areEqOrdRWS fNext fIsEq) a b)
+
+applyIf :: Bool -> ( a -> a ) -> a -> a
+applyIf True  f a = f a
+applyIf False _ a = a
+
+mapEither :: ( a -> c ) -> ( b -> d ) -> Either a b -> Either c d
+mapEither f g = either (Left . f) (Right . g)
+
 -- | 
-reflPermutations :: NonEmpty a -> [(a,a)]
-reflPermutations (x :| [])        = []
-reflPermutations (x :| ys@(z:zs)) = [(x,y) | y <- ys] ++ reflPermutations (z :| zs)
+reflPermutations :: [a] -> [(a,a)]
+reflPermutations (x:ys) = [(x,y) | y <- ys] ++ reflPermutations ys
+reflPermutations _      = []
 
 classify :: forall a b . Ord b => ( a -> b ) -> [a] -> [NonEmpty a]
 classify fClassify = Map.elems . foldr classify' Map.empty
@@ -407,18 +493,5 @@ classify fClassify = Map.elems . foldr classify' Map.empty
   mCons x Nothing   = x :| []
   mCons x (Just xs) = x :| NE.toList xs
 
--- Internal. Stores an /inequality/ relation. The lowest int is the map key,
--- while the highest int is the set element.
-type IntUneqRel = IntMap IntSet
-
-areInUneq :: Int -> Int -> IntUneqRel -> Bool
-areInUneq a b m
-  | a < b      = maybe False (IntSet.member b) (IntMap.lookup a m)
-  | a > b      = maybe False (IntSet.member a) (IntMap.lookup b m)
-  | otherwise  = False
-
-insertUneq :: Int -> Int -> IntUneqRel -> IntUneqRel
-insertUneq a b m
-  | a < b      = IntMap.alter (Just . IntSet.insert b . fromMaybe IntSet.empty) a m
-  | a > b      = IntMap.alter (Just . IntSet.insert a . fromMaybe IntSet.empty) b m
-  | otherwise  = error "a /= a"
+unlessM :: Monad m => m Bool -> m () -> m ()
+unlessM mb m = join (unless <$> mb <*> pure m)
