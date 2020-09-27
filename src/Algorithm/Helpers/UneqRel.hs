@@ -1,5 +1,6 @@
 
--- | Internal module.
+-- | Internal module. Contains data structures that can store an inequality
+-- relation
 module Algorithm.Helpers.UneqRel where
 
 -- Stdlib imports
@@ -21,9 +22,12 @@ import           Data.IntMap.Strict ( IntMap )
 -- while the highest int is the set element.
 newtype IntUneqRel = IntUneqRel (IntMap IntSet)
 
+-- | The empty inequality relation. No element is unequal to any other element.
 emptyIntUneq :: IntUneqRel
 emptyIntUneq = IntUneqRel IntMap.empty
 
+-- | Returns `True` iff the provided elements are unequal within the relation.
+-- Returns `False` otherwise.
 areIntUneq :: Int -> Int -> IntUneqRel -> Bool
 areIntUneq a b (IntUneqRel m)
   | a < b      = maybe False (IntSet.member b) (IntMap.lookup a m)
@@ -48,9 +52,12 @@ insertIntUneq x y (IntUneqRel m)
 -- while the highest int is the set element.
 newtype OrdUneqRel a = OrdUneqRel (Map a (Set a))
 
+-- | The empty inequality relation. No element is unequal to any other element.
 emptyOrdUneq :: OrdUneqRel a
 emptyOrdUneq = OrdUneqRel Map.empty
 
+-- | Returns `True` iff the provided elements are unequal within the relation.
+-- Returns `False` otherwise.
 areOrdUneq :: Ord a => a -> a -> OrdUneqRel a -> Bool
 areOrdUneq a b (OrdUneqRel m)
   | a < b      = maybe False (Set.member b) (Map.lookup a m)

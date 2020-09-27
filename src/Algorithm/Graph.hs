@@ -61,7 +61,7 @@ import           Algorithm.Helpers.UneqRel
   )
 
 
--- | Internal.
+-- | Internal. The set of nodes visited during traversal.
 type Visited = IntSet
 
 -- | /O(n)/. Inverts the given graph.
@@ -255,6 +255,7 @@ findDuplicates fClassify fIsEq graph =
   fNode :: Int -> a
   fNode = nodeById graph
 
+  -- | A wrapper around `fIsEq` that compared nodes by their identifier.
   fIsEqNode :: forall m2 . Monad m2 => ( Int -> Int -> m2 Bool ) -> Int -> Int -> m2 Bool
   fIsEqNode f i j = fIsEq f (fNode i) (fNode j)
 
@@ -347,6 +348,12 @@ toMapMaybe fNode fNext roots =
       return m
 
 -- | Returns `True` iff both graphs contain identical paths.
+--
+-- Warning: The first argument to the equality-checking function is /not/
+--   commutative. The order of its node identifiers must be identical to the
+--   order of the provided graph nodes. E.g.,
+--   @isPathEq (const 1) (\f (a,x) (b,y) -> f x y) g1 g2@ is correct. Using
+--   @\f (a,x) (b,y) -> f y x@ here is generally /incorrect/.
 isPathEq :: forall a c
           . Ord c
          => ( a -> c )
@@ -360,9 +367,13 @@ isPathEq fClassify fIsEq a b =
     EqRel.empty
     emptyOrdUneq
   where
+  -- | Applies the appropriate graph its next function, and stores the result in
+  -- set where the identifiers reference the appropriate graph.
   eitherNext :: Either Int Int -> Set (Either Int Int)
   eitherNext = either (mapIntSet Left . next a . nodeById a) (mapIntSet Right . next b . nodeById b)
 
+  -- | A wrapper around `fIsEq` which considers the graph (left/right) that is
+  -- referenced by its arguments.
   isEqEither :: Monad m => ( Either Int Int -> Either Int Int -> m Bool ) -> Either Int Int -> Either Int Int -> m Bool
   isEqEither f (Left i)  (Left j)  = fIsEq (\x y -> f (Left x)  (Left y))  (nodeById a i) (nodeById b j)
   isEqEither f (Left i)  (Right j) = fIsEq (\x y -> f (Left x)  (Right y)) (nodeById a i) (nodeById b j)
@@ -456,6 +467,7 @@ reflPermutations :: [a] -> [(a,a)]
 reflPermutations (x:ys) = [(x,y) | y <- ys] ++ reflPermutations ys
 reflPermutations _      = []
 
+-- | Groups elements into classes
 classify :: forall a b . Ord b => ( a -> b ) -> [a] -> [NonEmpty a]
 classify fClassify = Map.elems . foldr classify' Map.empty
   where
